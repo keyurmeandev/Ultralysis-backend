@@ -1,0 +1,464 @@
+<?php
+
+namespace classes;
+
+use datahelper;
+use projectsettings;
+use filters;
+use utils;
+use db;
+use config;
+
+class FirstHitWeeklySummaryPage extends config\UlConfig {
+
+    public $accountArray = array();
+    public $allOtherCount;
+    public $accountName;
+    public $getField;
+    public $getPageAnalysisField;
+    public $skipDbcolumnArray = false;
+    public $dbColumnsArray;
+    public $displayCsvNameArray;
+    //public $getTableName;
+    public $pageName;
+
+    public function __construct() {
+        $this->allOtherCount = 20;
+    }
+
+    public function go($settingVars) {
+        $this->initiate($settingVars); //INITIATE COMMON VARIABLES
+        $this->settingVars->pageName = (empty($this->settingVars->pageName)) ? $this->settingVars->pageID . '_FirstHitWeeklySummaryPage' : $settingVars->pageName;
+
+        $this->redisCache = new utils\RedisCache($this->queryVars);
+        $this->settingVars->useRequiredTablesOnly = false;
+        $this->queryPart = $this->getAll();  //PREPARE TABLE JOIN STRING USING this class getAll
+
+        $action = $_REQUEST["action"];
+        if (isset($_REQUEST["fetchConfig"]) && !empty($_REQUEST["fetchConfig"]) && $_REQUEST["fetchConfig"] == 'true') {
+
+            /* Fetch Table Settings Start */
+            $tables = $this->getPageConfiguration('table_settings', $this->settingVars->pageID);
+            $tablesSelectedField = $this->getPageConfiguration('table_settings_default_field', $this->settingVars->pageID);
+            /* Fetch Table Settings End */
+
+            /* Fetch Filter Settings Start */
+            $this->jsonOutput['pageConfig'] = array(
+                'enabledFilters' => $this->getPageConfiguration('filter_settings', $this->settingVars->pageID)
+            );
+            /* Fetch Filter Settings End */
+            
+            /* Pagination Settings Starts */
+            $pagination_settings_arr = $this->getPageConfiguration('pagination_settings', $this->settingVars->pageID);
+            if(count($pagination_settings_arr) > 0){
+                $this->jsonOutput['is_pagination'] = $pagination_settings_arr[0];
+                $this->jsonOutput['per_page_row_count'] = (int) $pagination_settings_arr[1];
+            }
+            /* Pagination Settings End */
+
+
+            
+            $this->buildPageArray();
+
+        }else{
+
+            $this->topGridData();
+            break;
+        }
+        
+        return $this->jsonOutput;
+    }
+
+    
+    /**
+     * topGridData()
+     * This Function is used to retrieve list based on set parameters     
+     * @access private  
+     * @return $this->jsonOutput with all data that should be sent to client app     
+     */
+    private function topGridData($action = false) {
+        
+        $getField = $_REQUEST['Field'];
+        $gridFieldPart = explode("#", $getField);
+        $gridField = strtoupper($gridFieldPart[0]);
+        $gridField = (count($gridFieldPart) > 1) ? strtoupper($gridField . "_" . $gridFieldPart[1]) : $gridField;
+
+        $this->queryPart = filters\productAndMarketFilter::include_product_and_market_filters($this->queryVars,$this->settingVars);
+
+        $this->accountIdField = (isset($this->settingVars->dataArray[$gridField]) && isset($this->settingVars->dataArray[$gridField]['ID'])) ? 
+            $this->settingVars->dataArray[$gridField]['ID'] : $this->settingVars->dataArray[$gridField]['NAME'];
+
+        echo $this->accountNameField = $this->settingVars->dataArray[$getField]['NAME'];exit;
+
+        
+        $poTable = $this->settingVars->tesco_po_details;
+        $timetable = $this->settingVars->timetable;
+        $skutable = $this->settingVars->skutable;
+        
+        $query = "SELECT ".$this->accountNameField." AS ACCOUNT " .
+                ",SUM((CASE WHEN " . filters\timeFilter::$tyWeekRange . " THEN 1 ELSE 0 END) * total_orders_cases) AS  ORDERS_TY".
+                ",SUM((CASE WHEN " . filters\timeFilter::$lyWeekRange . " THEN 1 ELSE 0 END) * total_orders_cases) AS  ORDERS_LY".
+                ",SUM((CASE WHEN " . filters\timeFilter::$tyWeekRange . " THEN 1 ELSE 0 END) * (fta_code1_cases+fta_code2_cases+fta_code3_cases+fta_code4_primary_cases+fta_code5_cases+fta_code6_cases+total_shortage_cases+suppressed_qty)) AS SHORTAGES_TY".
+                ",SUM((CASE WHEN " . filters\timeFilter::$lyWeekRange . " THEN 1 ELSE 0 END) * (fta_code1_cases+fta_code2_cases+fta_code3_cases+fta_code4_primary_cases+fta_code5_cases+fta_code6_cases+total_shortage_cases+suppressed_qty)) AS  SHORTAGES_LY".
+                ",SUM((CASE WHEN " . filters\timeFilter::$tyWeekRange . " THEN 1 ELSE 0 END) * (fta_code1_cases+fta_code2_cases+fta_code3_cases+fta_code4_primary_cases+fta_code5_cases+fta_code6_cases)) AS FTA_TY".
+                ",SUM((CASE WHEN " . filters\timeFilter::$lyWeekRange . " THEN 1 ELSE 0 END) * (fta_code1_cases+fta_code2_cases+fta_code3_cases+fta_code4_primary_cases+fta_code5_cases+fta_code6_cases)) AS FTA_LY".
+                " FROM ".$poTable.", ".$skutable.", ".$timetable. 
+                " WHERE ".$poTable.".GID = ".$skutable.".GID AND ". 
+                $poTable.".skuID = ".$skutable.".PIN AND ".
+                $poTable.".GID = ".$timetable.".GID AND ".
+                $poTable.".".$this->settingVars->dateperiod." = ".$timetable.".".$this->settingVars->dateperiod." AND ".
+                $skutable.".clientID = '".$this->settingVars->clientID."' AND ".
+                $skutable.".hide <> 1 AND ".
+                $skutable.".GID = ".$this->settingVars->GID." AND ".
+                $timetable.".GID = ".$this->settingVars->GID." AND ".
+                $extraWhere .
+                $this->commonQueryPart . 
+                (!empty($this->queryPart) ? $this->queryPart : "") .
+                " AND (" . filters\timeFilter::$tyWeekRange . " OR " . filters\timeFilter::$lyWeekRange . ") " .
+                " GROUP BY ACCOUNT ORDER BY ORDERS_TY DESC";
+
+        $redisOutput = $this->redisCache->checkAndReadByQueryHashFromCache($query);
+        if ($redisOutput === false) {
+            $result = $this->queryVars->queryHandler->runQuery($query, $this->queryVars->linkid, db\ResultTypes::$TYPE_OBJECT);
+            $this->redisCache->setDataForHash($result);
+        } else {
+            $result = $redisOutput;
+        }
+        
+        if (is_array($result) && !empty($result))
+        {
+            foreach($result as $key => $data)
+            {
+                if($this->fileType == 'FIRST HIT DAILY'){
+                    $result[$key]['STAR_LINE'] = $data['STAR_LINE'];
+                }
+                if($action){
+                    $result[$key]['ORDER_DUE_DATE'] = $data['ORDER_DUE_DATE'];
+                }
+                $result[$key]['TOTAL_ORDERS_CASE'] =(int) $data['TOTAL_ORDERS_CASE'];
+                $result[$key]['TOTAL_SHORTAGES'] = (int) $data['TOTAL_SHORTAGES'];
+                if($this->fileType != 'FIRST HIT DAILY'){
+                    $result[$key]['SHORTAGES'] = (int) $data['SHORTAGES'];
+                }
+                $result[$key]['FTA_TOTAL'] = (int) $data['FTA_TOTAL'];
+                $result[$key]['FTA1'] = (int) $data['FTA1'];
+                $result[$key]['FTA2'] = (int) $data['FTA2'];
+                $result[$key]['FTA3'] = (int) $data['FTA3'];
+                $result[$key]['FTA4'] = (int) $data['FTA4'];
+                if($this->fileType == 'FIRST HIT DAILY'){
+                    $result[$key]['FTA4SUPPLIER'] = (int) $data['FTA4SUPPLIER'];
+                }
+                $result[$key]['FTA5'] = (int) $data['FTA5'];
+                $result[$key]['FTA6'] = (int) $data['FTA6'];
+                $result[$key]['SUPPRESSED_QTY'] = (int) $data['SUPPRESSED_QTY'];
+                $result[$key]['S2DCSL_PER'] = ($data['TOTAL_ORDERS_CASE'] != 0) ? ((($data['TOTAL_ORDERS_CASE']-$data['TOTAL_SHORTAGES'])/$data['TOTAL_ORDERS_CASE'])*100) : 0;
+                $result[$key]['S2DCSL_PER'] = (double) number_format($result[$key]['S2DCSL_PER'], 1, '.', '');
+            }
+
+            $AllRowTotal['SKUID'] = '';
+            $AllRowTotal['ACCOUNT'] = 'TOTAL';
+            if($this->fileType == 'FIRST HIT DAILY'){
+                $AllRowTotal['STAR_LINE'] = '';
+            }
+            $AllRowTotal['TOTAL_ORDERS_CASE'] = array_sum(array_column($result,'TOTAL_ORDERS_CASE'));
+            $AllRowTotal['TOTAL_SHORTAGES'] = array_sum(array_column($result,'TOTAL_SHORTAGES'));
+            if($this->fileType != 'FIRST HIT DAILY'){
+                $AllRowTotal['SHORTAGES'] = array_sum(array_column($result,'SHORTAGES'));
+            }
+            $AllRowTotal['FTA_TOTAL'] = array_sum(array_column($result,'FTA_TOTAL'));
+            $AllRowTotal['FTA1'] = array_sum(array_column($result,'FTA1'));
+            $AllRowTotal['FTA2'] = array_sum(array_column($result,'FTA2'));
+            $AllRowTotal['FTA3'] = array_sum(array_column($result,'FTA3'));
+            $AllRowTotal['FTA4'] = array_sum(array_column($result,'FTA4'));
+            if($this->fileType == 'FIRST HIT DAILY'){
+                $AllRowTotal['FTA4SUPPLIER'] = array_sum(array_column($result,'FTA4SUPPLIER'));
+            }
+            $AllRowTotal['FTA5'] = array_sum(array_column($result,'FTA5'));
+            $AllRowTotal['FTA6'] = array_sum(array_column($result,'FTA6'));
+            $AllRowTotal['SUPPRESSED_QTY'] = array_sum(array_column($result,'SUPPRESSED_QTY'));
+            $AllRowTotal['S2DCSL_PER'] = ($AllRowTotal['TOTAL_ORDERS_CASE'] != 0) ? ((($AllRowTotal['TOTAL_ORDERS_CASE']-$AllRowTotal['TOTAL_SHORTAGES'])/$AllRowTotal['TOTAL_ORDERS_CASE'])*100) : 0;
+            $AllRowTotal['S2DCSL_PER'] = (double) number_format($AllRowTotal['S2DCSL_PER'], 1, '.', '');
+
+            array_unshift($result,$AllRowTotal);
+        }
+        if($action) {
+            $this->jsonOutput['topGridBySkuData'] = $result;
+        } else {
+            $this->jsonOutput['topGridData'] = $result;
+        }
+    }
+
+    public function buildDataArray($fields, $isCsvColumn, $appendTableNameWithDbColumn = false ) {
+        if (empty($fields))
+            return false;
+
+        $configurationCheck = new config\ConfigurationCheck($this->settingVars, $this->queryVars);
+        $configurationCheck->buildDataArray($fields, $isCsvColumn, $appendTableNameWithDbColumn);
+        $this->dbColumnsArray = $configurationCheck->dbColumnsArray;
+        $this->displayCsvNameArray = $configurationCheck->displayCsvNameArray;
+        return;
+    }
+
+    public function buildPageArray() {
+
+        $topGridColumns['ORDERS_TY'] = [ 'name' => 'ORDERS TY', 'type' => 'number', 'size' => 100, 'decimalPoints'=>0, 'filter' => 'agNumberColumnFilter'];
+        $topGridColumns['ORDERS_LY'] = [ 'name' => 'ORDERS LY', 'type' => 'number', 'size' => 100, 'decimalPoints'=>0, 'filter' => 'agNumberColumnFilter'];
+        $topGridColumns['VAR'] = [ 'name' => 'VAR %', 'type' => 'number', 'size' => 100, 'decimalPoints'=>0, 'filter' => 'agNumberColumnFilter'];
+
+        $topGridColumns['SHORTS_TY'] = [ 'name' => 'SHORTS TY', 'type' => 'number', 'size' => 100, 'decimalPoints'=>0, 'filter' => 'agNumberColumnFilter'];
+        $topGridColumns['SHORTS_LY'] = [ 'name' => 'SHORTS LY', 'type' => 'number', 'size' => 100, 'decimalPoints'=>0, 'filter' => 'agNumberColumnFilter'];
+        $topGridColumns['VAR'] = [ 'name' => 'VAR %', 'type' => 'number', 'size' => 100, 'decimalPoints'=>0, 'filter' => 'agNumberColumnFilter'];
+
+        $topGridColumns['TOTAL_FTA_TY'] = [ 'name' => 'TOTAL FTA TY', 'type' => 'number', 'size' => 100, 'decimalPoints'=>0, 'filter' => 'agNumberColumnFilter'];
+        $topGridColumns['TOTAL_FTA_LY'] = [ 'name' => 'TOTAL FTA LY', 'type' => 'number', 'size' => 100, 'decimalPoints'=>0, 'filter' => 'agNumberColumnFilter'];
+        $topGridColumns['VAR'] = [ 'name' => 'VAR %', 'type' => 'number', 'size' => 100, 'decimalPoints'=>0, 'filter' => 'agNumberColumnFilter'];
+        
+        //$this->jsonOutput['topGridColumns']  = $topGridColumns;
+
+        /* Filter : Field Selection Start*/
+
+        $tables = array();
+        if ($this->settingVars->isDynamicPage){
+            $tables = $this->getPageConfiguration('table_settings', $this->settingVars->pageID);
+            $tablesSelectedField = $this->getPageConfiguration('table_settings_default_field', $this->settingVars->pageID);
+        }else {
+            if (isset($this->getPageAnalysisField) && $this->getPageAnalysisField == 'Product')
+                $tables = array($this->settingVars->skutable);
+            else if (isset($this->getPageAnalysisField) && $this->getPageAnalysisField == 'Store')
+                $tables = array("market");
+        }
+
+        if (is_array($tables) && !empty($tables)) {
+            $fields = $tmpArr = array();
+            $fields = $this->prepareFieldsFromFieldSelectionSettings($tables, false);
+
+            $this->buildDataArray($fields, false, true);
+            if(isset($tablesSelectedField) && is_array($tablesSelectedField) && !empty($tablesSelectedField)){
+                $this->settingVars->pageArray[$this->settingVars->pageName]["ACCOUNT"] = $tablesSelectedField[0];
+            } else {
+                $account = explode("#", $this->settingVars->pageArray[$this->settingVars->pageName]["ACCOUNT"]);
+                $search = array_search($account[0],$this->dbColumnsArray);
+                if($search !== false) {
+                    if (count($account) > 1) {
+                        $search1 = array_search($account[1],$this->dbColumnsArray);
+                        $this->settingVars->pageArray[$this->settingVars->pageName]["ACCOUNT"] = $search."#".$search1;
+                    }
+                    else
+                        $this->settingVars->pageArray[$this->settingVars->pageName]["ACCOUNT"] = $search;
+                }
+            }
+            
+            foreach ($fields as $field) {
+                $val = explode("#", $field);
+                $search = array_search($val[0],$this->dbColumnsArray);
+                
+                if($search !== false) {
+                    if ($this->settingVars->pageArray[$this->settingVars->pageName]["ACCOUNT"] == $search && $search !== false) {
+                        if(count($val) > 1) {
+                            $search1 = array_search($val[1],$this->dbColumnsArray);
+                            $this->settingVars->pageArray[$this->settingVars->pageName]["ACCOUNT"] = $search."#".$search1;
+                        }
+                        else
+                            $this->settingVars->pageArray[$this->settingVars->pageName]["ACCOUNT"] = $search;
+                    }
+
+                    if(count($val) > 1) {
+                        $search1 = array_search($val[1],$this->dbColumnsArray);
+                        $tmpArr[] = array('label' => $this->displayCsvNameArray[$search], 'data' => $search."#".$search1);
+                    }
+                    else
+                        $tmpArr[] = array('label' => $this->displayCsvNameArray[$search], 'data' => $search);
+                }
+            }
+            $this->jsonOutput['fieldSelection'] = $tmpArr;
+
+
+            /* CUSTOME TIME SELECTION -- START */
+            $poTable = $this->settingVars->tesco_po_details;
+            $timetable = $this->settingVars->timetable;
+            
+            $mydateSelect = $this->settingVars->getMydateSelect($this->settingVars->dateField);
+            if($this->fullLayout){
+                $query = "SELECT order_due_date as MYDATE " .
+                    " FROM " . $poTable. " WHERE ".$poTable.".gid = ".$this->settingVars->GID." AND ".
+                    $this->commonQueryPart . 
+                    " GROUP BY MYDATE ORDER BY MYDATE DESC";
+
+                $redisOutput = $this->redisCache->checkAndReadByQueryHashFromCache($query);
+                
+                if ($redisOutput === false) {
+                    $dateList = $this->queryVars->queryHandler->runQuery($query, $this->queryVars->linkid, db\ResultTypes::$TYPE_ARRAY);
+                    $this->redisCache->setDataForHash($dateList);
+                } else {
+                    $dateList = $redisOutput;
+                }
+
+                if (is_array($dateList) && !empty($dateList)) {
+                    $maxYear = date('Y', strtotime($dateList[0][0]));
+                    $this->settingVars->latestMydate = $dateList[0][0];
+
+                    foreach ($dateList as $dateDetail) {
+                        if (date('Y', strtotime($dateDetail[0])) == $maxYear) {
+                            $maxYearAllDate[] = $dateDetail;
+                        }
+                    }
+
+                    //FINDING MAXIMUM AND MINIMUM WEEKS USING MAXIMUM YEAR
+                    $maxYearAllDate = utils\SortUtility::sort2DArray($maxYearAllDate, 0, utils\SortTypes::$SORT_ASCENDING);
+                    $maxDate = $maxYearAllDate[count($maxYearAllDate)-1];
+                    $minDate = $maxYearAllDate[0];
+                }
+
+                $weeksList  = array();
+                foreach($dateList as $j=>$data)
+                {
+                    $this->jsonOutput['selectedIndexTo'] = 0;
+                    if ($data[0] == $minDate[0])
+                        $this->jsonOutput['selectedIndexFrom'] = $j; //MINIMUM WEEK OF MAXIMUM YEAR  = FROM WEEK SELECTED ITEM
+                
+                    if(isset($this->settingVars->fromToDateRange)) {
+                        if ($data[0] == $fromLyDate[0])
+                            $this->jsonOutput['selectedLyIndexFrom'] = $j;
+
+                        if ($data[0] == $toLyDate[0])
+                            $this->jsonOutput['selectedLyIndexTo'] = $j;
+                    }
+                    
+                    $dateperiod      = date("jS M Y", strtotime($data[0]));
+                    $temp        = array();
+                    $temp['data']    = $data[0];
+                    $temp['label']   = $dateperiod;
+                    
+                    $temp['numdata'] = $j;
+                    $weeksList[] = $temp;
+                }
+
+                $this->jsonOutput['gridWeek'] = $weeksList;
+            } else {
+                $query = "SELECT " . $this->settingVars->yearperiod . " AS YEAR" .
+                    ",".$this->settingVars->weekperiod . " AS WEEK" .
+                    (($this->settingVars->dateField) ? ",".$mydateSelect." " : " ") .
+                    "FROM " . $poTable. ", ".$timetable. " WHERE ".$poTable.".gid = ".$timetable.".gid AND ".$poTable.".".$this->settingVars->dateperiod." = ".$timetable.".".$this->settingVars->dateperiod." AND ".$poTable.".gid = ".$this->settingVars->GID." AND ".$timetable.".gid = ".$this->settingVars->GID." GROUP BY YEAR,WEEK ORDER BY YEAR DESC,WEEK DESC";
+                
+                $redisOutput = $this->redisCache->checkAndReadByQueryHashFromCache($query);
+                
+                if ($redisOutput === false) {
+                    $dateList = $this->queryVars->queryHandler->runQuery($query, $this->queryVars->linkid, db\ResultTypes::$TYPE_ARRAY);
+                    $this->redisCache->setDataForHash($dateList);
+                } else {
+                    $dateList = $redisOutput;
+                }
+                
+                $data = $dateList[0];
+                
+                $maxYear = $data[0];
+                $maxWeekOfMaxYear = $data[1];
+
+                $maxYearAllWeek = $yearList = array();
+                $prevEntryYear = 0;
+                if (is_array($dateList) && !empty($dateList)) {
+                    foreach ($dateList as $dateDetail) {
+                        $yearList[$dateDetail[0]] = $dateDetail[0];
+
+                        if ($dateDetail[0] != $prevEntryYear)
+                            $maxDateOfAllYear[$dateDetail[0]] = $dateDetail;
+
+                        $prevEntryYear = $dateDetail[0];
+
+                        if ($dateDetail[0] == $maxYear) {
+                            $maxYearAllWeek[] = $dateDetail;
+                        }
+                    }
+                }
+                
+                $maxYearAllWeek = utils\SortUtility::sort2DArray($maxYearAllWeek, 1, utils\SortTypes::$SORT_ASCENDING);
+
+                foreach ($yearList as $key => $data) {
+                    if (isset($maxDateOfAllYear[$data]) && !empty($maxDateOfAllYear[$data]) && 
+                        $maxDateOfAllYear[$data][1] > 52) {
+                        $weekNum = $maxDateOfAllYear[$data][1];
+                    } else {
+                        $weekNum = 52;
+                    }
+
+                    for ($i = $weekNum; $i >= 1; $i--) {
+                        $tempArr = array("year" => $data, "week" => $i, "yearweek" => $i . "-" . $data);
+                        $yearWeekArr[] = $tempArr;
+                    }
+                }
+                
+                $minCombination = $dateList[count($dateList)-1];
+                $minYear = $minCombination[0];
+                $minWeekOfMinYear = $minCombination[1];            
+                
+                $maxCombination = $maxYearAllWeek[count($maxYearAllWeek)-1];
+                $minCombination = $maxYearAllWeek[0];
+                $maxWeek = $maxCombination[1];
+                $minWeek = $minCombination[1];
+
+                $mydateArr = array();
+                foreach ($dateList as $key => $data) {
+                    $mydate = date("jS M Y", strtotime($data[2]));
+                    $mydateArr[$data[0]][$data[1]] = $mydate;
+                }
+
+                for ($i = 0; $i < count($yearWeekArr); $i++) {
+                    if ($minYear == $yearWeekArr[$i]['year'] && $minWeekOfMinYear == $yearWeekArr[$i]['week']) {
+                        $minCounter = $i;
+                        // break;
+                    }
+
+                    if ($maxYear == $yearWeekArr[$i]['year'] && $maxWeekOfMaxYear == $yearWeekArr[$i]['week']) {
+                        $maxCounter = $i;
+                        // break;
+                    }
+                }
+                
+                $weekArr = array();
+                for ($i = $maxCounter; $i <= $minCounter; $i++) {
+                    $mydateVal = "";
+                    if (key_exists($yearWeekArr[$i]['year'], $mydateArr)) {
+                        if (key_exists($yearWeekArr[$i]['week'], $mydateArr[$yearWeekArr[$i]['year']]))
+                            $mydateVal = $mydateArr[$yearWeekArr[$i]['year']][$yearWeekArr[$i]['week']];
+                    }
+
+                    if ($minWeek == $yearWeekArr[$i]['week'] && $maxYear == $yearWeekArr[$i]['year'])
+                        $this->jsonOutput['selectedIndexFrom'] = $i - $maxCounter;
+
+                    if ($maxWeek == $yearWeekArr[$i]['week'] && $maxYear == $yearWeekArr[$i]['year'])
+                        $this->jsonOutput['selectedIndexTo'] = $i - $maxCounter;
+
+                    if ($minWeek == $yearWeekArr[$i]['week'] && ($maxYear-1) == $yearWeekArr[$i]['year'])
+                        $this->jsonOutput['selectedLyIndexFrom'] = $i - $maxCounter;
+
+                    if ($maxWeek == $yearWeekArr[$i]['week'] && ($maxYear-1) == $yearWeekArr[$i]['year'])
+                        $this->jsonOutput['selectedLyIndexTo'] = $i - $maxCounter;
+
+                    if($mydateVal != '')
+                        $mydateVal = " (".$mydateVal.")";
+                    else
+                        $mydateVal = '';
+
+                    $temp = array(
+                        'data' => $yearWeekArr[$i]['yearweek'], 
+                        'label' => $yearWeekArr[$i]['yearweek'] . $mydateVal,
+                        'numdata' => $i - $maxCounter
+                    );
+                    $weekArr[] = $temp;
+                }
+                $this->jsonOutput['gridWeek'] = $weekArr;
+            }
+            
+            /* CUSTOME TIME SELECTION -- END */
+
+        } elseif (isset($this->settingVars->pageArray[$this->settingVars->pageName]["ACCOUNT"]) &&
+                !empty($this->settingVars->pageArray[$this->settingVars->pageName]["ACCOUNT"])) {
+            $this->skipDbcolumnArray = true;
+        } else {
+            $response = array("configuration" => array("status" => "fail", "messages" => array("Page isn't configured properly.")));
+            echo json_encode($response);
+            exit();
+        }
+    }
+}
+?>
